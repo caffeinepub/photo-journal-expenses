@@ -17,31 +17,8 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useCamera } from "../camera/useCamera";
-
-function useLiveClock() {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
-  return now;
-}
-
-function formatDateTime(date: Date) {
-  const d = date.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-  const t = date.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-  return { d, t };
-}
 
 interface AddEntryModalProps {
   open: boolean;
@@ -63,9 +40,14 @@ export function AddEntryModal({
   onSave,
   isSaving,
 }: AddEntryModalProps) {
-  const liveClock = useLiveClock();
-  const today = new Date().toISOString().split("T")[0];
-  const [dateStr, setDateStr] = useState(today);
+  function todayLocalStr() {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  const [dateStr, setDateStr] = useState(todayLocalStr);
   const [note, setNote] = useState("");
   const [photoMode, setPhotoMode] = useState<PhotoMode>("idle");
   const [capturedFile, setCapturedFile] = useState<File | null>(null);
@@ -96,27 +78,151 @@ export function AddEntryModal({
     await startCamera();
   }, [startCamera]);
 
+  /** Burns the date/time stamp onto a File and returns a new stamped File + preview URL */
+  const stampPhotoWithDateTime = useCallback(
+    (
+      file: File,
+      captureTime: Date,
+    ): Promise<{ stampedFile: File; previewUrl: string }> => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        const objUrl = URL.createObjectURL(file);
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext("2d")!;
+          ctx.drawImage(img, 0, 0);
+
+          // Build stamp text
+          const dateStr = captureTime.toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+          const timeStr = captureTime.toLocaleTimeString(undefined, {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          });
+
+          const baseFontSize = Math.max(16, Math.round(canvas.width * 0.032));
+          const padding = Math.round(baseFontSize * 0.6);
+          const lineGap = Math.round(baseFontSize * 0.35);
+
+          ctx.font = `bold ${baseFontSize}px monospace`;
+          const timeWidth = ctx.measureText(timeStr).width;
+          ctx.font = `${Math.round(baseFontSize * 0.85)}px monospace`;
+          const dateWidth = ctx.measureText(dateStr).width;
+          const boxWidth = Math.max(timeWidth, dateWidth) + padding * 2;
+          const boxHeight =
+            baseFontSize +
+            Math.round(baseFontSize * 0.85) +
+            lineGap +
+            padding * 2;
+          const x = padding;
+          const y = canvas.height - boxHeight - padding;
+
+          // Background
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          const r = Math.round(baseFontSize * 0.4);
+          ctx.beginPath();
+          ctx.moveTo(x + r, y);
+          ctx.lineTo(x + boxWidth - r, y);
+          ctx.quadraticCurveTo(x + boxWidth, y, x + boxWidth, y + r);
+          ctx.lineTo(x + boxWidth, y + boxHeight - r);
+          ctx.quadraticCurveTo(
+            x + boxWidth,
+            y + boxHeight,
+            x + boxWidth - r,
+            y + boxHeight,
+          );
+          ctx.lineTo(x + r, y + boxHeight);
+          ctx.quadraticCurveTo(x, y + boxHeight, x, y + boxHeight - r);
+          ctx.lineTo(x, y + r);
+          ctx.quadraticCurveTo(x, y, x + r, y);
+          ctx.closePath();
+          ctx.fill();
+
+          // Time text
+          ctx.fillStyle = "#ffffff";
+          ctx.font = `bold ${baseFontSize}px monospace`;
+          ctx.fillText(timeStr, x + padding, y + padding + baseFontSize);
+
+          // Date text
+          ctx.font = `${Math.round(baseFontSize * 0.85)}px monospace`;
+          ctx.globalAlpha = 0.85;
+          ctx.fillText(
+            dateStr,
+            x + padding,
+            y +
+              padding +
+              baseFontSize +
+              lineGap +
+              Math.round(baseFontSize * 0.85),
+          );
+          ctx.globalAlpha = 1;
+
+          URL.revokeObjectURL(objUrl);
+
+          canvas.toBlob(
+            (blob) => {
+              if (!blob) {
+                resolve({
+                  stampedFile: file,
+                  previewUrl: URL.createObjectURL(file),
+                });
+                return;
+              }
+              const stampedFile = new File([blob], file.name, {
+                type: "image/jpeg",
+              });
+              const previewUrl = URL.createObjectURL(blob);
+              resolve({ stampedFile, previewUrl });
+            },
+            "image/jpeg",
+            0.92,
+          );
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(objUrl);
+          resolve({ stampedFile: file, previewUrl: URL.createObjectURL(file) });
+        };
+        img.src = objUrl;
+      });
+    },
+    [],
+  );
+
   const handleCapturePhoto = useCallback(async () => {
     const file = await capturePhoto();
     if (file) {
-      setCapturedFile(file);
-      const url = URL.createObjectURL(file);
-      setCapturedPreviewUrl(url);
+      const captureTime = new Date();
       await stopCamera();
       setPhotoMode("idle");
+      const { stampedFile, previewUrl } = await stampPhotoWithDateTime(
+        file,
+        captureTime,
+      );
+      setCapturedFile(stampedFile);
+      setCapturedPreviewUrl(previewUrl);
     }
-  }, [capturePhoto, stopCamera]);
+  }, [capturePhoto, stopCamera, stampPhotoWithDateTime]);
 
   const handleFileUpload = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      setCapturedFile(file);
-      const url = URL.createObjectURL(file);
-      setCapturedPreviewUrl(url);
+      const captureTime = new Date();
+      const { stampedFile, previewUrl } = await stampPhotoWithDateTime(
+        file,
+        captureTime,
+      );
+      setCapturedFile(stampedFile);
+      setCapturedPreviewUrl(previewUrl);
       setPhotoMode("idle");
     },
-    [],
+    [stampPhotoWithDateTime],
   );
 
   const handleRemovePhoto = useCallback(() => {
@@ -137,7 +243,10 @@ export function AddEntryModal({
     if (!capturedFile) return;
     const arrayBuffer = await capturedFile.arrayBuffer();
     const photoBytes = new Uint8Array(arrayBuffer) as Uint8Array<ArrayBuffer>;
-    const date = BigInt(new Date(dateStr).getTime());
+    // Parse date string in local time (avoid UTC-midnight offset bug)
+    const [yyyy, mm, dd] = dateStr.split("-").map(Number);
+    const localDate = new Date(yyyy, mm - 1, dd);
+    const date = BigInt(localDate.getTime());
     await onSave({
       date,
       note,
@@ -152,7 +261,7 @@ export function AddEntryModal({
     setCapturedFile(null);
     setCapturedPreviewUrl(null);
     setNote("");
-    setDateStr(today);
+    setDateStr(todayLocalStr());
     setPhotoMode("idle");
     setUploadProgress(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -260,20 +369,7 @@ export function AddEntryModal({
                   alt="Preview"
                   className="w-full h-full object-contain"
                 />
-                {/* Date/time stamp overlay */}
-                <div className="absolute bottom-3 left-3 px-2.5 py-1.5 rounded-md bg-black/60 backdrop-blur-sm text-white leading-tight select-none pointer-events-none">
-                  {(() => {
-                    const { d, t } = formatDateTime(liveClock);
-                    return (
-                      <>
-                        <div className="text-xs font-semibold tracking-wide">
-                          {t}
-                        </div>
-                        <div className="text-[11px] opacity-80">{d}</div>
-                      </>
-                    );
-                  })()}
-                </div>
+
                 <button
                   type="button"
                   onClick={handleRemovePhoto}
