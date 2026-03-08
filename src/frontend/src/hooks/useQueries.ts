@@ -32,11 +32,22 @@ export function useAddEntry() {
       photoBytes: Uint8Array<ArrayBuffer>;
       onProgress?: (pct: number) => void;
     }) => {
-      if (!actor) throw new Error("Actor not ready");
-      const blob = onProgress
-        ? ExternalBlob.fromBytes(photoBytes).withUploadProgress(onProgress)
-        : ExternalBlob.fromBytes(photoBytes);
-      await actor.addEntry(id, date, note, blob);
+      if (!actor)
+        throw new Error("Actor not ready — please wait and try again");
+      let blob = ExternalBlob.fromBytes(photoBytes);
+      if (onProgress) {
+        blob = blob.withUploadProgress(onProgress);
+      }
+      try {
+        await actor.addEntry(id, date, note, blob);
+      } catch (err) {
+        // Provide a clearer message for common IC errors
+        const raw = err instanceof Error ? err.message : String(err);
+        if (raw.includes("Entry already exists")) {
+          throw new Error("A duplicate entry was detected. Please try again.");
+        }
+        throw new Error(raw);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["entries"] });

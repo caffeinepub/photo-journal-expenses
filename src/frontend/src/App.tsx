@@ -54,8 +54,9 @@ export default function App() {
       });
       setAddModalOpen(false);
       toast.success("Entry saved");
-    } catch {
-      toast.error("Failed to save entry");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(`Failed to save entry: ${msg}`);
     }
   }
 
